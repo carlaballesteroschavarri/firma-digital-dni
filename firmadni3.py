@@ -22,6 +22,69 @@ session = None
 cert = None
 clave_privada = None
 
+
+# ----------------------------
+# Acceso al contenido del DNIe
+# ----------------------------
+def verificar_pin():
+    pin = entrada_pin.get()
+    try:
+        # Abrir sesión y hacer login con el PIN
+        global session, cert, clave_privada
+        session = pkcs11.openSession(slot)
+        session.login(pin)
+
+        # Limpiar inmediatamente el PIN 
+        entrada_pin.delete(0, tk.END)
+        pin = None  
+
+        # Búsqueda de certificado
+        certs = session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_CERTIFICATE)])
+        if not certs:
+            raise Exception("No se encontró ningún certificado en el DNIe.")
+
+        cert_obj = certs[2]
+        cert_der = bytes(session.getAttributeValue(cert_obj, [PyKCS11.CKA_VALUE], True)[0])
+        cert = x509.load_der_x509_certificate(cert_der)
+
+        # Buscar clave privada asociada
+        cert_id = session.getAttributeValue(cert_obj, [PyKCS11.CKA_ID])[0]
+        priv_keys = session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_PRIVATE_KEY),(PyKCS11.CKA_ID, cert_id)])
+        if not priv_keys:
+            raise Exception("No se encontró la clave privada correspondiente al certificado.")
+        clave_privada = priv_keys[0]
+
+        mostrar_menu()
+
+    except Exception as e:
+        messagebox.showerror("Error", str(e)) #Si ocurre cualquier error muestra un mensaje de error
+
+
+
+# ----------------------------
+# Menú aplicación
+# ----------------------------
+def mostrar_menu():
+    # Asegura que al cambiar de la pantalla del PIN a la pantalla del menú no se mezclen los widgets antiguos con los nuevos.
+    for widget in root.winfo_children():
+        widget.destroy()
+
+    # Fondo del menú
+    fondo_img = Image.open("fondo.png")  
+    fondo_img = fondo_img.resize((600, 400))
+    fondo_tk = ImageTk.PhotoImage(fondo_img)
+
+    fondo_label = tk.Label(root, image=fondo_tk)
+    fondo_label.image = fondo_tk  # evitar que lo borre el recolector
+    fondo_label.place(x=0, y=0, relwidth=1, relheight=1)
+
+    tk.Label(root, text="Menú principal", font=("Arial", 16, "bold"), bg="#ffffff").pack(pady=20)
+
+    tk.Button(root, text="Exportar certificado", command=exportar_certificado, width=30).pack(pady=5)
+    tk.Button(root, text="Firmar documento", command=firmar_documento, width=30).pack(pady=5)
+    tk.Button(root, text="Verificar firma", command=verificar_firma, width=30).pack(pady=5)
+    tk.Button(root, text="Salir", command=cerrar_sesion, width=30).pack(pady=20)
+
 # ---------------------------
 # Funciones principales
 # ---------------------------
@@ -29,9 +92,11 @@ clave_privada = None
 
 def exportar_certificado():
     try:
-        ruta = filedialog.asksaveasfilename(defaultextension=".pem",filetypes=[("Certificado PEM", "*.pem")],title="Guardar certificado como")
+        # Abre un cuadro de diálogo para elegir el nombre, la ubicación del archivo y obliga al formato .pem
+        ruta = filedialog.asksaveasfilename(defaultextension=".pem",filetypes=[("Certificado PEM", "*.pem")],title="Guardar certificado como") 
         if not ruta:
             return
+        # Abre el archivo en modo binario y escribe los bytes del certificado en formato PEM
         with open(ruta, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
         messagebox.showinfo("Éxito", f"Certificado exportado en: {ruta}")
@@ -39,15 +104,21 @@ def exportar_certificado():
         messagebox.showerror("Error", str(e))
 
 def firmar_documento():
+    # Abre un cuadro de diálogo para que el usuario seleccione el archivo a firmar
     archivo = filedialog.askopenfilename(title="Selecciona archivo a firmar")
     if not archivo:
         return
     try:
+        # Abre el archivo seleccionado en modo binario y lee su contenido
         with open(archivo, "rb") as f:
             data = f.read()
+        # Define el mecanismo de firma: RSA con SHA-256
         mechanism = PyKCS11.Mechanism(PyKCS11.CKM_SHA256_RSA_PKCS, None)
+        # Firma los datos con la clave privada
         sig_raw = bytes(session.sign(clave_privada, data, mechanism))
+        # Crea el nombre del archivo de salida agregando la extensión ".sig"
         sig_file = archivo + ".sig"
+        # Guarda la firma en un archivo separado
         with open(sig_file, "wb") as f:
             f.write(sig_raw)
         messagebox.showinfo("Éxito", f"Firma guardada en: {sig_file}")
@@ -88,62 +159,6 @@ def cerrar_sesion():
             pass
     root.quit()
 
-# ---------------------------
-# Interfaz gráfica
-# ---------------------------
-def verificar_pin():
-    pin = entrada_pin.get()
-    try:
-        # Abrir sesión y hacer login con el PIN
-        global session, cert, clave_privada
-        session = pkcs11.openSession(slot)
-        session.login(pin)
-
-        # Limpiar inmediatamente el PIN del widget y la variable
-        entrada_pin.delete(0, tk.END)
-        pin = None  
-
-        # Continuar con la inicialización de certificados
-        certs = session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_CERTIFICATE)])
-        if not certs:
-            raise Exception("No se encontró ningún certificado en el DNIe.")
-
-        cert_obj = certs[2]
-        cert_der = bytes(session.getAttributeValue(cert_obj, [PyKCS11.CKA_VALUE], True)[0])
-        cert = x509.load_der_x509_certificate(cert_der)
-
-        # Buscar clave privada asociada
-        cert_id = session.getAttributeValue(cert_obj, [PyKCS11.CKA_ID])[0]
-        priv_keys = session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_PRIVATE_KEY),(PyKCS11.CKA_ID, cert_id)])
-        if not priv_keys:
-            raise Exception("No se encontró la clave privada correspondiente al certificado.")
-        clave_privada = priv_keys[0]
-
-        mostrar_menu()
-
-    except Exception as e:
-        messagebox.showerror("Error", str(e)) #Si ocurre cualquier error muestra un mensaje de error
-        
-def mostrar_menu():
-    # Asegura que al cambiar de la pantalla del PIN a la pantalla del menú no se mezclen los widgets antiguos con los nuevos.
-    for widget in root.winfo_children():
-        widget.destroy()
-
-    # Fondo del menú
-    fondo_img = Image.open("fondo.png")  
-    fondo_img = fondo_img.resize((600, 400))
-    fondo_tk = ImageTk.PhotoImage(fondo_img)
-
-    fondo_label = tk.Label(root, image=fondo_tk)
-    fondo_label.image = fondo_tk  # evitar que lo borre el recolector
-    fondo_label.place(x=0, y=0, relwidth=1, relheight=1)
-
-    tk.Label(root, text="Menú principal", font=("Arial", 16, "bold"), bg="#ffffff").pack(pady=20)
-
-    tk.Button(root, text="Exportar certificado", command=exportar_certificado, width=30).pack(pady=5)
-    tk.Button(root, text="Firmar documento", command=firmar_documento, width=30).pack(pady=5)
-    tk.Button(root, text="Verificar firma", command=verificar_firma, width=30).pack(pady=5)
-    tk.Button(root, text="Salir", command=cerrar_sesion, width=30).pack(pady=20)
 
 # ---------------------------
 # Ventana principal
